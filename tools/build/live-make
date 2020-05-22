@@ -1,0 +1,4 @@
+#!/bin/bash
+[[ -d /develop/src/build ]] || /usr/bin/local/live-generate
+cd /develop/src/build
+make
