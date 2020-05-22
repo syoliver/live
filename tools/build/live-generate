@@ -3,5 +3,5 @@ cd /develop/src
 rm -rf build
 mkdir build
 cd build
-conan install .. --build fmt
+conan install .. --build boost
 cmake ..
