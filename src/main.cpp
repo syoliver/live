@@ -43,7 +43,8 @@ int main()
   handle_shudown(ioc);
 
   live::storage::database database;
-  live::http::server      server(ioc, std::make_shared<request_handler>(database), 0);
+  database.open("tmp");
+  live::http::server      server(ioc, std::make_shared<request_handler>(database));
 
   server.listen("0.0.0.0", 80);
   ioc.run();

@@ -49,7 +49,7 @@ namespace live::http::coroutine
   {
    public:
     using streamsize = live::http::stream::streamsize;
-    stream(Allocator alloc = Allocator()) : pull_(nullptr), buffer_(alloc), offset_(0) {}
+    stream(Allocator alloc = Allocator()) : pull_(nullptr), buffer_(alloc), offset_(0), eof_(false), first_step_(true) {}
 
     virtual streamsize readsome(char* s, streamsize n, boost::beast::error_code& ec) override
     {
@@ -61,15 +61,27 @@ namespace live::http::coroutine
         return readn;
       }
 
-      if(pull_ == nullptr)
+      if(pull_ == nullptr || eof_)
       {
+        ec = boost::beast::http::error::end_of_stream;
         return 0;
       }
 
-      char*       buf         = nullptr;
-      std::size_t size        = 0;
+      char*       buf  = nullptr;
+      std::size_t size = 0;
+
+      if(!first_step_)
+      {
+        (*pull_)(); // context switch to parser in case of buffer if not ended
+      }
+      first_step_             = false;
       std::tie(buf, size, ec) = pull_->get();
-      if(ec)
+
+      if(!ec)
+      {
+        eof_ = true;
+      }
+      else if(ec != boost::beast::http::error::need_buffer)
       {
         return 0;
       }
@@ -86,16 +98,17 @@ namespace live::http::coroutine
       buffer_.resize(size - n);
       std::memcpy(&buffer_[0], buf + n, size - n);
 
-
       return n;
     }
 
     void set_stream_puller(Pull& pull) { pull_ = &pull; }
 
    private:
-    Pull*                       pull_;
+    Pull*                        pull_;
     std::vector<char, Allocator> buffer_;
-    std::size_t                 offset_;
+    std::size_t                  offset_;
+    bool                         eof_;
+    bool                         first_step_;
   };
 
 } // namespace live::http::coroutine

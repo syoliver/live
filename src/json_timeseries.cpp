@@ -2,11 +2,12 @@
 #include "database.hpp"
 #include "http/stream_request.hpp"
 #include <rapidjson/reader.h>
+#include <rapidjson/error/en.h>
 #include <boost/beast/core/error.hpp>
 #include <cstdint>
+#include <iostream>
 #include <optional>
 #include <variant>
-
 /*
 [{
   "measurement": "name",
@@ -17,14 +18,15 @@
 
 struct timeseries_json_sax_handler : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>, timeseries_json_sax_handler>
 {
-  timeseries_json_sax_handler(live::storage::database& storage) : storage_(storage) {}
+  timeseries_json_sax_handler(live::storage::batch_writer& storage) : storage_(storage) {}
 
   bool Null() { return false; }
   bool Bool(bool b)
   {
     if(in_field == field_t::value)
     {
-      measurement.value = b;
+      measurement.value     = b;
+      measurement_has_value = true;
       return true;
     }
     return false;
@@ -34,14 +36,16 @@ struct timeseries_json_sax_handler : public rapidjson::BaseReaderHandler<rapidjs
   {
     if(in_field == field_t::value)
     {
-      measurement.value = i;
+      measurement.value     = i;
+      measurement_has_value = true;
       return true;
     }
     else if(in_field == field_t::timestamp)
     {
       if(i > 0)
       {
-        measurement.timestamp = i;
+        measurement.timestamp     = i;
+        measurement_has_timestamp = true;
         return true;
       }
     }
@@ -52,12 +56,14 @@ struct timeseries_json_sax_handler : public rapidjson::BaseReaderHandler<rapidjs
   {
     if(in_field == field_t::value)
     {
-      measurement.value = u;
+      measurement.value     = u;
+      measurement_has_value = true;
       return true;
     }
     else if(in_field == field_t::timestamp)
     {
-      measurement.timestamp = u;
+      measurement.timestamp     = u;
+      measurement_has_timestamp = true;
       return true;
     }
 
@@ -68,14 +74,16 @@ struct timeseries_json_sax_handler : public rapidjson::BaseReaderHandler<rapidjs
   {
     if(in_field == field_t::value)
     {
-      measurement.value = i;
+      measurement.value     = i;
+      measurement_has_value = true;
       return true;
     }
     else if(in_field == field_t::timestamp)
     {
       if(i > 0)
       {
-        measurement.timestamp = i;
+        measurement.timestamp     = i;
+        measurement_has_timestamp = true;
         return true;
       }
     }
@@ -86,12 +94,14 @@ struct timeseries_json_sax_handler : public rapidjson::BaseReaderHandler<rapidjs
   {
     if(in_field == field_t::value)
     {
-      measurement.value = u;
+      measurement.value     = u;
+      measurement_has_value = true;
       return true;
     }
     else if(in_field == field_t::timestamp)
     {
-      measurement.timestamp = u;
+      measurement.timestamp     = u;
+      measurement_has_timestamp = true;
       return true;
     }
 
@@ -102,7 +112,8 @@ struct timeseries_json_sax_handler : public rapidjson::BaseReaderHandler<rapidjs
   {
     if(in_field == field_t::value)
     {
-      measurement.value = d;
+      measurement.value     = d;
+      measurement_has_value = true;
       return true;
     }
     return false;
@@ -111,12 +122,14 @@ struct timeseries_json_sax_handler : public rapidjson::BaseReaderHandler<rapidjs
   {
     if(in_field == field_t::value)
     {
-      measurement.value = std::string(str, length);
+      measurement.value     = std::string(str, length);
+      measurement_has_value = true;
       return true;
     }
     else if(in_field == field_t::name)
     {
-      measurement.name = std::string(str, length);
+      measurement.name     = std::string(str, length);
+      measurement_has_name = true;
       return true;
     }
 
@@ -124,7 +137,10 @@ struct timeseries_json_sax_handler : public rapidjson::BaseReaderHandler<rapidjs
   }
   bool StartObject()
   {
-    measurement = measurement_t{};
+    measurement               = live::measurement_t{};
+    measurement_has_name      = false;
+    measurement_has_value     = false;
+    measurement_has_timestamp = false;
     if(level != 1)
     {
       return false;
@@ -165,9 +181,10 @@ struct timeseries_json_sax_handler : public rapidjson::BaseReaderHandler<rapidjs
     --level;
 
     in_field = field_t::none;
-    if(measurement.name && std::holds_alternative<nullptr_t>(measurement.value) == false && measurement.timestamp != 0u)
+    if(measurement_has_name && measurement_has_value && measurement_has_timestamp)
     {
       // if object is complete : push to database
+      storage_.put(measurement);
       return true;
     }
 
@@ -189,7 +206,7 @@ struct timeseries_json_sax_handler : public rapidjson::BaseReaderHandler<rapidjs
     return true;
   }
 
-  live::storage::database& storage_;
+  live::storage::batch_writer& storage_;
 
   int  level          = 0;
   bool in_list        = false;
@@ -205,14 +222,10 @@ struct timeseries_json_sax_handler : public rapidjson::BaseReaderHandler<rapidjs
 
   field_t in_field = field_t::none;
 
-  struct measurement_t
-  {
-    std::optional<std::string>                                                                                   name;
-    std::variant<nullptr_t, std::string, double, std::int32_t, std::uint32_t, std::int64_t, std::uint64_t, bool> value;
-    std::uint64_t timestamp = 0u;
-  };
-
-  measurement_t measurement;
+  live::measurement_t measurement;
+  bool                measurement_has_value;
+  bool                measurement_has_name;
+  bool                measurement_has_timestamp;
 };
 
 class stream_reader
@@ -271,6 +284,7 @@ class stream_reader
       end_    = 0;
       while(end_ == 0 && !ec)
       {
+        std::fill(std::begin(buffer_), std::end(buffer_), '\0');
         end_ = is_.readsome(&buffer_[0], buffer_.size(), ec);
       }
     }
@@ -289,9 +303,16 @@ namespace live::timeseries
 {
   bool json_storage::write_to(live::storage::database& storage) &&
   {
-    timeseries_json_sax_handler handler(storage);
+    auto                        writer = storage.write_batch();
+    timeseries_json_sax_handler handler(writer);
     rapidjson::Reader           reader;
     stream_reader               ss(cs_);
-    return reader.Parse(ss, handler).IsError() == false;
+    rapidjson::ParseResult      result = reader.Parse(ss, handler);
+    if(result.IsError() == false)
+    {
+      return writer.commit();
+    }
+    std::cerr << rapidjson::GetParseError_En(result.Code()) << std::endl;
+    return false;
   }
 } // namespace live::timeseries

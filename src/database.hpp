@@ -1,6 +1,7 @@
 #pragma once
 
 #include "measurement.hpp"
+#include <rocksdb/db.h>
 
 namespace live::storage
 {
@@ -9,7 +10,19 @@ namespace live::storage
   class batch_writer
   {
    public:
-    batch_writer(database* db) : db_(db), commited_(false) {}
+    batch_writer(rocksdb::DB* db) : db_(db) {}
+    batch_writer() = delete;
+    batch_writer(const batch_writer& ) = delete;
+    batch_writer& operator=(const batch_writer&) = delete;
+    batch_writer(batch_writer&& other) noexcept
+        : db_(other.db_)
+        , batch_(std::move(other.batch_))
+        , commited_(other.commited_)
+        , rollbacked_(other.rollbacked_)
+    {
+      other.rollbacked_ = true;
+    }
+
     ~batch_writer()
     {
       if(commited_ == false)
@@ -17,18 +30,28 @@ namespace live::storage
         rollback();
       }
     }
-    void put(const live::measurement& measure);
+
+
+    void put(const live::measurement_t& measure);
     bool commit();
     void rollback();
 
    private:
-    database* db_;
-    bool      commited_;
+    rocksdb::DB*        db_;
+    rocksdb::WriteBatch batch_;
+    bool                commited_ = false;
+    bool                rollbacked_ = false;
   };
 
   class database
   {
    public:
-    batch_writer write_batch() { return batch_writer(this); }
+    ~database();
+
+    bool         open(const std::string& path);
+    batch_writer write_batch() { return batch_writer(db_); }
+
+   private:
+    rocksdb::DB* db_ = nullptr;
   };
 } // namespace live::storage

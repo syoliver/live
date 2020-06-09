@@ -92,14 +92,10 @@ namespace live::http
         parser.get().body().data = buf;
         parser.get().body().size = sizeof(buf);
         boost::beast::http::read(socket_, buffer_, parser, ec);
-        if(ec == boost::beast::http::error::need_buffer)
-        {
-          ec = {};
-        }
 
         writer(std::make_tuple(buf, sizeof(buf) - parser.get().body().size, ec));
 
-        if(ec)
+        if(ec != boost::beast::http::error::need_buffer)
         {
           return;
         }
